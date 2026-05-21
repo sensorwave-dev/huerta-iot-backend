@@ -147,7 +147,19 @@ func main() {
 
 	// ============ RUTAS PERSONALIZADAS (JWT) ============
 
-	// /api/nodos/{nodo}/dispositivos y mediciones
+	// /api/nodos/{nodo}/zonas
+	mux.Handle("GET /api/nodos/{nodo}/zonas", jwtMiddleware(http.HandlerFunc(handleListarZonas)))
+
+	// /api/nodos/{nodo}/zonas/{zona}/dispositivos
+	mux.Handle("GET /api/nodos/{nodo}/zonas/{zona}/dispositivos", jwtMiddleware(http.HandlerFunc(handleListarDispositivosPorZona)))
+
+	// /api/nodos/{nodo}/zonas/{zona}/dispositivos/{dispositivo}/sensores
+	mux.Handle("GET /api/nodos/{nodo}/zonas/{zona}/dispositivos/{dispositivo}/sensores", jwtMiddleware(http.HandlerFunc(handleListarSensores)))
+
+	// /api/nodos/{nodo}/zonas/{zona}/dispositivos/{dispositivo}/actuadores
+	mux.Handle("GET /api/nodos/{nodo}/zonas/{zona}/dispositivos/{dispositivo}/actuadores", jwtMiddleware(http.HandlerFunc(handleListarActuadores)))
+
+	// Rutas legacy (compatibilidad)
 	mux.Handle("GET /api/nodos/{nodo}/dispositivos", jwtMiddleware(http.HandlerFunc(handleListarDispositivos)))
 	mux.Handle("GET /api/nodos/{nodo}/dispositivos/{dispositivo}/mediciones", jwtMiddleware(http.HandlerFunc(handleListarMediciones)))
 
@@ -813,7 +825,47 @@ func jwtMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// parsePathUNS descompone un path de serie UNS en sus 5 segmentos.
+// Formato esperado: {nodo_id}/{zona_id}/{dispositivo_id}/{tipo}/{metrica}
+func parsePathUNS(path string) (nodo, zona, dispositivo, tipo, metrica string) {
+	partes := strings.Split(path, "/")
+	if len(partes) >= 5 {
+		return partes[0], partes[1], partes[2], partes[3], partes[4]
+	}
+	return "", "", "", "", ""
+}
+
+// handleListarZonas maneja GET /api/nodos/{nodo}/zonas
+func handleListarZonas(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	nodoID := r.PathValue("nodo")
+	if nodoID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID de nodo requerido"})
+		return
+	}
+
+	series := manager.ListarSeries(nodoID + "/*")
+
+	zonasMap := make(map[string]struct{})
+	for _, serie := range series {
+		_, zona, _, _, _ := parsePathUNS(serie.Path)
+		if zona != "" {
+			zonasMap[zona] = struct{}{}
+		}
+	}
+
+	zonas := make([]string, 0, len(zonasMap))
+	for z := range zonasMap {
+		zonas = append(zonas, z)
+	}
+
+	json.NewEncoder(w).Encode(zonas)
+}
+
 // handleListarDispositivos maneja GET /api/nodos/{nodo}/dispositivos
+// Lista dispositivos de todas las zonas (flat) para compatibilidad.
 func handleListarDispositivos(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -826,13 +878,11 @@ func handleListarDispositivos(w http.ResponseWriter, r *http.Request) {
 
 	series := manager.ListarSeries(nodoID + "/*")
 
-	fmt.Println("Dispositivos encontrados en nodo", nodoID, ":", series)
-
 	dispositivosMap := make(map[string]struct{})
 	for _, serie := range series {
-		partes := strings.Split(serie.Path, "/")
-		if len(partes) >= 2 {
-			dispositivosMap[partes[1]] = struct{}{}
+		_, _, dispositivo, _, _ := parsePathUNS(serie.Path)
+		if dispositivo != "" {
+			dispositivosMap[dispositivo] = struct{}{}
 		}
 	}
 
@@ -844,7 +894,96 @@ func handleListarDispositivos(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(dispositivos)
 }
 
+// handleListarDispositivosPorZona maneja GET /api/nodos/{nodo}/zonas/{zona}/dispositivos
+func handleListarDispositivosPorZona(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	nodoID := r.PathValue("nodo")
+	zonaID := r.PathValue("zona")
+
+	if nodoID == "" || zonaID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID de nodo y zona requeridos"})
+		return
+	}
+
+	patron := nodoID + "/" + zonaID + "/*"
+	series := manager.ListarSeries(patron)
+
+	dispositivosMap := make(map[string]struct{})
+	for _, serie := range series {
+		_, zona, dispositivo, _, _ := parsePathUNS(serie.Path)
+		if zona == zonaID && dispositivo != "" {
+			dispositivosMap[dispositivo] = struct{}{}
+		}
+	}
+
+	dispositivos := make([]string, 0, len(dispositivosMap))
+	for d := range dispositivosMap {
+		dispositivos = append(dispositivos, d)
+	}
+
+	json.NewEncoder(w).Encode(dispositivos)
+}
+
+// handleListarSensores maneja GET /api/nodos/{nodo}/zonas/{zona}/dispositivos/{dispositivo}/sensores
+func handleListarSensores(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	nodoID := r.PathValue("nodo")
+	zonaID := r.PathValue("zona")
+	dispositivoID := r.PathValue("dispositivo")
+
+	if nodoID == "" || zonaID == "" || dispositivoID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID de nodo, zona y dispositivo requeridos"})
+		return
+	}
+
+	patron := nodoID + "/" + zonaID + "/" + dispositivoID + "/sensor/*"
+	series := manager.ListarSeries(patron)
+
+	sensores := make([]string, 0, len(series))
+	for _, serie := range series {
+		_, zona, dispositivo, tipo, metrica := parsePathUNS(serie.Path)
+		if zona == zonaID && dispositivo == dispositivoID && tipo == "sensor" {
+			sensores = append(sensores, metrica)
+		}
+	}
+
+	json.NewEncoder(w).Encode(sensores)
+}
+
+// handleListarActuadores maneja GET /api/nodos/{nodo}/zonas/{zona}/dispositivos/{dispositivo}/actuadores
+func handleListarActuadores(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	nodoID := r.PathValue("nodo")
+	zonaID := r.PathValue("zona")
+	dispositivoID := r.PathValue("dispositivo")
+
+	if nodoID == "" || zonaID == "" || dispositivoID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID de nodo, zona y dispositivo requeridos"})
+		return
+	}
+
+	patron := nodoID + "/" + zonaID + "/" + dispositivoID + "/actuador/*"
+	series := manager.ListarSeries(patron)
+
+	actuadores := make([]string, 0, len(series))
+	for _, serie := range series {
+		_, zona, dispositivo, tipo, metrica := parsePathUNS(serie.Path)
+		if zona == zonaID && dispositivo == dispositivoID && tipo == "actuador" {
+			actuadores = append(actuadores, metrica)
+		}
+	}
+
+	json.NewEncoder(w).Encode(actuadores)
+}
+
 // handleListarMediciones maneja GET /api/nodos/{nodo}/dispositivos/{dispositivo}/mediciones
+// DEPRECATED: mantiene compatibilidad con paths de 3 segmentos, ahora usa 5.
 func handleListarMediciones(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -857,14 +996,14 @@ func handleListarMediciones(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patron := nodoID + "/" + dispositivoID + "/*"
+	patron := nodoID + "/*" + "/" + dispositivoID + "/*/*"
 	series := manager.ListarSeries(patron)
 
 	mediciones := make([]string, 0, len(series))
 	for _, serie := range series {
-		partes := strings.Split(serie.Path, "/")
-		if len(partes) >= 3 {
-			mediciones = append(mediciones, partes[2])
+		_, _, dispositivo, _, metrica := parsePathUNS(serie.Path)
+		if dispositivo == dispositivoID && metrica != "" {
+			mediciones = append(mediciones, metrica)
 		}
 	}
 
