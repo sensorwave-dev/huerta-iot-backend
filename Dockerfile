@@ -2,10 +2,11 @@ ARG GO_VERSION=1
 FROM golang:${GO_VERSION}-bookworm as builder
 
 WORKDIR /usr/src/app
-COPY go.mod ./
-RUN go mod download && go mod verify
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN go build -v -o /run-app .
+# Cada deploy toma la pseudo-versión más nueva publicada en el proxy.
+RUN go get github.com/sensorwave-dev/sensorwave@latest && go build -v -o /run-app .
 
 FROM debian:bookworm-slim
 

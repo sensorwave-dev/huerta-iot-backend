@@ -68,7 +68,7 @@ type ActualizarUsuarioRequest struct {
 	EsAdmin  *bool   `json:"esAdmin,omitempty"`
 }
 
-var manager *despachador.ManagerDespachador // variable global para manager
+var manager *despachador.GestorDespachador // variable global para manager
 var s3Client *s3.Client                     // cliente S3 para usuarios
 var s3Bucket string                         // bucket S3
 var httpServer *http.Server                 // servidor HTTP
@@ -102,9 +102,27 @@ func main() {
 		log.Printf("Advertencia al inicializar usuarios: %v", err)
 	}
 
-	// crea el manager del despachador
+	if os.Getenv("SENSORWAVE_DESPACHADOR_ID") == "" {
+		idReplica := os.Getenv("FLY_MACHINE_ID")
+		if idReplica == "" {
+			idReplica = os.Getenv("FLY_ALLOC_ID")
+		}
+		if idReplica != "" {
+			if err := os.Setenv("SENSORWAVE_DESPACHADOR_ID", idReplica); err != nil {
+				log.Fatalf("Error fijando SENSORWAVE_DESPACHADOR_ID: %v", err)
+			}
+		}
+	}
+
+	brokerMQTT := os.Getenv("BROKER_MQTT")
+	if brokerMQTT == "" {
+		brokerMQTT = "tcp://sensorwave-mqtt.internal:1884"
+	}
+
+	// crea el gestor del despachador
 	manager, err = despachador.Crear(despachador.Opciones{
-		ConfigS3: configS3,
+		ConfigS3:   configS3,
+		BrokerMQTT: brokerMQTT,
 	})
 	if err != nil {
 		log.Fatalf("Error creando despachador: %v", err)
